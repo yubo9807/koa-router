@@ -40,9 +40,8 @@ console.log(getRouteList());
 [
   { method: 'POST', path: '/api/v1/user/signIn', redirect: null },
   { method: 'GET', path: '/api/v1/user/signOut', redirect: null },
-  { method: 'GET', path: '/api/v2/file/upload/image', redirect: null },
+  { method: 'POST', path: '/api/v2/file/upload/image', redirect: null },
   { method: 'POST', path: '/api/v2/file/upload/image', redirect: '/api/v2/file/upload/image2' },
-  { method: 'POST', path: '/api/v2/file/upload/image2', redirect: null }
 ]
 */
 
