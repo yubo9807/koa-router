@@ -8,19 +8,24 @@ type Method     = 'ALL' | 'GET' | 'POST' | 'HEAD' | 'PUT' | 'DELETE' | 'CONNECT'
 type State      = AnyObj | null
 
 interface Perform {
-  path:       Path
-  method:     Method
-  middleware: Middleware
-  state?:     State
-  noBack?:    boolean
-  redirect?:  Path
+  path:        Path
+  method:      Method
+  middleware:  Middleware
+  state?:      State
+  originPath?: Path
 }
 
 const performQueue: Perform[] = [];
 
 export class Router {
 
-  prefix: Path
+  prefix:              Path
+  #currentMethod:      Method       = null;
+  #currentPath:        Path         = null;
+  #currentMiddlewares: Middleware[] = null;
+  #currentRedirect:    Path         = null;
+  #currentState:       State        = null;
+
   constructor(prefix = '') {
     this.prefix = prefix;
   }
@@ -33,38 +38,30 @@ export class Router {
   async use(route: { prefix: string }) {
     this.prefix = route.prefix + this.prefix;
   }
-  
-  #noBack = false
-  /**
-   * 将不在获取所有路由中返回
-   */
-  noBack() {
-    this.#noBack = true;
-  }
 
-  #state = null;
   /**
    * 添加额外注释信息
    * @note 在 .method 之前调用，否则将作用到下一个
    * @note 可以执行规范数据，用它来生成接口文档
    * @param state  任意对象
    */
-  remark(state: State = null) {
-    this.#state = state;
+  state(state: State) {
+    this.#currentState = state;
+    return this;
   }
 
 
   // 支持的 http method
-  all     (path: Path, ...args: Middleware[]) { this.method('ALL',     path, ...args) }
-  get     (path: Path, ...args: Middleware[]) { this.method('GET',     path, ...args) }
-  post    (path: Path, ...args: Middleware[]) { this.method('POST',    path, ...args) }
-  put     (path: Path, ...args: Middleware[]) { this.method('PUT',     path, ...args) }
-  delete  (path: Path, ...args: Middleware[]) { this.method('DELETE',  path, ...args) }
-  head    (path: Path, ...args: Middleware[]) { this.method('HEAD',    path, ...args) }
-  connect (path: Path, ...args: Middleware[]) { this.method('CONNECT', path, ...args) }
-  options (path: Path, ...args: Middleware[]) { this.method('OPTIONS', path, ...args) }
-  trace   (path: Path, ...args: Middleware[]) { this.method('TRACE',   path, ...args) }
-  patch   (path: Path, ...args: Middleware[]) { this.method('PATCH',   path, ...args) }
+  all     (path: Path, ...args: Middleware[]) { this.method('ALL',     path, ...args); return this; }
+  get     (path: Path, ...args: Middleware[]) { this.method('GET',     path, ...args); return this; }
+  post    (path: Path, ...args: Middleware[]) { this.method('POST',    path, ...args); return this; }
+  put     (path: Path, ...args: Middleware[]) { this.method('PUT',     path, ...args); return this; }
+  delete  (path: Path, ...args: Middleware[]) { this.method('DELETE',  path, ...args); return this; }
+  head    (path: Path, ...args: Middleware[]) { this.method('HEAD',    path, ...args); return this; }
+  connect (path: Path, ...args: Middleware[]) { this.method('CONNECT', path, ...args); return this; }
+  options (path: Path, ...args: Middleware[]) { this.method('OPTIONS', path, ...args); return this; }
+  trace   (path: Path, ...args: Middleware[]) { this.method('TRACE',   path, ...args); return this; }
+  patch   (path: Path, ...args: Middleware[]) { this.method('PATCH',   path, ...args); return this; }
 
   /**
    * 添加对应方法的中间件
@@ -76,66 +73,53 @@ export class Router {
     const index = performQueue.findIndex(val => val.method === method && val.path === this.prefix + path);
     if (index >= 0) throw new Error(`config url repeat：${method} ${this.prefix + path}`);
 
-    let state = this.#state;
-    let lock  = false;         // 加锁，保证 state 只添加一次
-    args.forEach(middleware => {
-      if (lock) state = null;  // 添加过后清空，节省内存消耗
-      performQueue.push({
-        method     ,
-        middleware ,
-        state      ,
-        path:      this.prefix + path,
-        redirect:  null,
-        noBack:    this.#noBack
-      })
-      lock = true;
-    });
-    this.#state  = null;        // 恢复到默认值，保证不会作用到下次调用该方法
-    this.#noBack = false;
+    this.#currentMethod      = method;
+    this.#currentPath        = path;
+    this.#currentMiddlewares = args;
+
+    return this;
   }
+
 
   /**
    * 接口重定向
-   * @note 此方法回直接改变添加的 state 数据，移动到新接口上
-   * @note 如不需移动 state 中的数据，请使用 koa ctx.redirect 方法
-   * @note 注册过的中间件将不能重定向，重定向过的地址、方法也将不能再注册
-   * @param method 
-   * @param origin 原地址
-   * @param target 新地址
+   * @param path 新地址
    */
-  redirect(method: Method, origin: string, target: string) {
-    const rawAddress = this.prefix + origin;
-    const redirect   = this.prefix + target;
-
-    {
-      const index = performQueue.findIndex(val => val.method === method && val.path === rawAddress);
-      if (index < 0) throw new Error(`${method} ${rawAddress} not registered yet, can't use redirect`);
-    }
-    {
-      const index = performQueue.findIndex(val => val.method === method && val.path === redirect);
-      if (index >= 0) throw new Error(`config url repeat：${method} ${redirect}`);
-    }
-
-    let backupsPath = null;  // 备份原 path 路径
-
-    const list = performQueue.filter(val => {
-      if (val.method === method && val.path === rawAddress) {
-        backupsPath = val.path;
-        val.path    = redirect;
-        return true;
-      }
-    });
-
-    if (list.length <= 0) return;
-
-    // 将原注册地址、方法添加到执行队列中，并发生重定向
+  redirect(path: string) {
+    this.#currentRedirect = path;
     performQueue.push({
-      method      ,
-      redirect    ,
-      path:       backupsPath,
-      middleware: ctx => ctx.redirect(redirect),
-      state:      null,
+      method:     this.#currentMethod,
+      path:       this.#currentPath,
+      middleware: (ctx, next) => { ctx.redirect(this.prefix + path) },
     });
+    return this;
+  }
+
+  /**
+   * 重置临时属性
+   */
+  #restore() {
+    this.#currentMethod      = null
+    this.#currentPath        = null
+    this.#currentMiddlewares = null
+    this.#currentRedirect    = null
+    this.#currentState       = null
+  }
+
+  /**
+   * 将配置信息添加到执行队列中
+   */
+  exec() {
+    this.#currentMiddlewares.forEach(val => {
+      performQueue.push({
+        method:     this.#currentMethod,
+        middleware: val,
+        state:      this.#currentState,
+        path:       this.prefix + (this.#currentRedirect || this.#currentPath),
+        originPath: this.#currentRedirect && this.prefix + this.#currentPath,
+      });
+    })
+    this.#restore();
   }
 
 }
@@ -149,14 +133,14 @@ export function getRouteList() {
   const list = [];
   // 对注册过的 method path 进行收集
   performQueue.forEach(val => {
-    if (val.noBack || val.method === 'ALL') return;
+    if (val.method === 'ALL') return;
     const index = list.findIndex(item => item.method === val.method && item.path === val.path);
     if (index >= 0) return;
 
     // 只返回有用的数据
-    const { method, path, state, redirect } = val;
-    list.push({ method, path, state, redirect });
-  })
+    const { middleware, state, ...args } = val;
+    list.push({ ...state, ...args });
+  });
   return list;
 }
 
